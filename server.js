@@ -2,11 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const { google } = require('googleapis');
 const fetch = require('node-fetch');
-
+ 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
+ 
 // ── Config ────────────────────────────────────────────────────────────────────
 const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -14,10 +14,10 @@ const CLAUDE_KEY    = process.env.ANTHROPIC_API_KEY;
 const REPLY_TONE    = process.env.REPLY_TONE    || 'friendly and warm';
 const REPLY_LENGTH  = process.env.REPLY_LENGTH  || 'short (1-2 sentences)';
 const CHANNEL_NAME  = process.env.CHANNEL_NAME  || '';
-const PORT          = process.env.PORT          || 3000;
+const PORT          = process.env.PORT          || 8080;
 const CHECK_INTERVAL_MINS = parseInt(process.env.CHECK_INTERVAL_MINS || '15');
 const REDIRECT_URI  = process.env.REDIRECT_URI  || `http://localhost:${PORT}/auth/callback`;
-
+ 
 // ── State ─────────────────────────────────────────────────────────────────────
 let refreshToken  = process.env.GOOGLE_REFRESH_TOKEN || null;
 let botRunning    = false;
@@ -25,19 +25,19 @@ let botInterval   = null;
 let logs          = [];
 let stats         = { checked: 0, replied: 0, errors: 0, lastRun: null };
 let repliedIds    = new Set();
-
+ 
 function log(msg, type = 'info') {
   const entry = { time: new Date().toISOString(), msg, type };
   logs.unshift(entry);
   if (logs.length > 200) logs.pop();
   console.log(`[${type.toUpperCase()}] ${msg}`);
 }
-
+ 
 // ── OAuth ─────────────────────────────────────────────────────────────────────
 function getOAuth2Client() {
   return new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 }
-
+ 
 async function getAuthenticatedClient() {
   if (!refreshToken) throw new Error('Not authenticated. Visit /auth to connect YouTube.');
   const oauth2 = getOAuth2Client();
@@ -46,14 +46,14 @@ async function getAuthenticatedClient() {
   oauth2.setCredentials(credentials);
   return oauth2;
 }
-
+ 
 // ── YouTube helpers ───────────────────────────────────────────────────────────
 async function getChannelId(auth) {
   const yt = google.youtube({ version: 'v3', auth });
   const res = await yt.channels.list({ part: 'id', mine: true });
   return res.data.items[0].id;
 }
-
+ 
 async function getUnrepliedComments(auth, channelId, maxResults = 50) {
   const yt = google.youtube({ version: 'v3', auth });
   const res = await yt.commentThreads.list({
@@ -63,7 +63,7 @@ async function getUnrepliedComments(auth, channelId, maxResults = 50) {
     order: 'time',
     moderationStatus: 'published'
   });
-
+ 
   const items = res.data.items || [];
   return items.filter(t => {
     const s = t.snippet.topLevelComment.snippet;
@@ -73,7 +73,7 @@ async function getUnrepliedComments(auth, channelId, maxResults = 50) {
     return !isOwn && !alreadyReplied && !repliedIds.has(id);
   });
 }
-
+ 
 async function postReply(auth, parentId, text) {
   const yt = google.youtube({ version: 'v3', auth });
   await yt.comments.insert({
@@ -81,11 +81,11 @@ async function postReply(auth, parentId, text) {
     requestBody: { snippet: { parentId, textOriginal: text } }
   });
 }
-
+ 
 // ── Claude ────────────────────────────────────────────────────────────────────
 async function generateReply(commentText) {
   const system = `You are a YouTube creator${CHANNEL_NAME ? ` named "${CHANNEL_NAME}"` : ''}. Reply to a YouTube comment in a ${REPLY_TONE} tone. Keep it ${REPLY_LENGTH}. Be authentic — no hollow phrases like "Great question!". Return ONLY the reply text, nothing else.`;
-
+ 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -100,25 +100,25 @@ async function generateReply(commentText) {
       messages: [{ role: 'user', content: commentText }]
     })
   });
-
+ 
   const data = await res.json();
   if (data.error) throw new Error(data.error.message);
   return data.content[0].text.trim();
 }
-
+ 
 // ── Bot loop ──────────────────────────────────────────────────────────────────
 async function runBotCycle() {
   if (!refreshToken) { log('No YouTube auth — skipping cycle', 'warn'); return; }
   log('Starting check cycle…');
   stats.lastRun = new Date().toISOString();
-
+ 
   try {
     const auth = await getAuthenticatedClient();
     const channelId = await getChannelId(auth);
     const threads = await getUnrepliedComments(auth, channelId);
     stats.checked += threads.length;
     log(`Found ${threads.length} unreplied comment(s)`);
-
+ 
     for (const thread of threads) {
       const s = thread.snippet.topLevelComment.snippet;
       const id = thread.snippet.topLevelComment.id;
@@ -140,7 +140,7 @@ async function runBotCycle() {
     log(`Cycle error: ${e.message}`, 'error');
   }
 }
-
+ 
 function startBot() {
   if (botRunning) return;
   botRunning = true;
@@ -148,22 +148,22 @@ function startBot() {
   runBotCycle();
   botInterval = setInterval(runBotCycle, CHECK_INTERVAL_MINS * 60 * 1000);
 }
-
+ 
 function stopBot() {
   if (!botRunning) return;
   clearInterval(botInterval);
   botRunning = false;
   log('Bot stopped', 'warn');
 }
-
+ 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
+ 
 // ── Routes ────────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   const connected = !!refreshToken;
   const statusColor = botRunning ? '#2ecc71' : connected ? '#f0a500' : '#e74c3c';
   const statusText  = botRunning ? 'Running' : connected ? 'Paused' : 'Not connected';
-
+ 
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -213,7 +213,7 @@ main{max-width:800px;margin:0 auto;padding:32px 20px}
   </div>
   <div class="dot" title="${statusText}"></div>
 </header>
-
+ 
 <main>
   <div class="card">
     <h2>Bot Status</h2>
@@ -231,7 +231,7 @@ main{max-width:800px;margin:0 auto;padding:32px 20px}
       ${connected ? `<a href="/bot/run-now" class="btn btn-gray">⚡ Run now</a>` : ''}
     </div>
   </div>
-
+ 
   ${!connected ? `
   <div class="card">
     <h2>Setup required</h2>
@@ -242,7 +242,7 @@ main{max-width:800px;margin:0 auto;padding:32px 20px}
       And add <code>${REDIRECT_URI}</code> to your Google OAuth <strong>Authorised redirect URIs</strong>.
     </p>
   </div>` : ''}
-
+ 
   <div class="card">
     <h2>Activity log</h2>
     <ul class="log-list">
@@ -257,10 +257,25 @@ main{max-width:800px;margin:0 auto;padding:32px 20px}
 </main>
 </body></html>`);
 });
-
+ 
+// Debug route
+app.get('/debug', (req, res) => {
+  res.json({
+    hasClientId: !!process.env.GOOGLE_CLIENT_ID,
+    hasClientSecret: !!process.env.GOOGLE_CLIENT_SECRET,
+    hasClaudeKey: !!process.env.ANTHROPIC_API_KEY,
+    redirectUri: process.env.REDIRECT_URI || 'NOT SET',
+    clientIdPreview: (process.env.GOOGLE_CLIENT_ID || 'NOT SET').slice(0, 25) + '...'
+  });
+});
+ 
 // Auth routes
 app.get('/auth', (req, res) => {
-  const oauth2 = getOAuth2Client();
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri = process.env.REDIRECT_URI;
+  if (!clientId) return res.send('Error: GOOGLE_CLIENT_ID not set in Railway variables.');
+  const oauth2 = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   const url = oauth2.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
@@ -268,12 +283,15 @@ app.get('/auth', (req, res) => {
   });
   res.redirect(url);
 });
-
+ 
 app.get('/auth/callback', async (req, res) => {
   const { code } = req.query;
   if (!code) return res.send('Error: no code received');
   try {
-    const oauth2 = getOAuth2Client();
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const redirectUri = process.env.REDIRECT_URI;
+    const oauth2 = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
     const { tokens } = await oauth2.getToken(code);
     refreshToken = tokens.refresh_token;
     log('YouTube account connected successfully!', 'success');
@@ -283,7 +301,7 @@ app.get('/auth/callback', async (req, res) => {
     res.send('Auth error: ' + e.message);
   }
 });
-
+ 
 // Bot control routes
 app.get('/bot/start', (req, res) => { startBot(); res.redirect('/'); });
 app.get('/bot/stop',  (req, res) => { stopBot();  res.redirect('/'); });
@@ -291,7 +309,7 @@ app.get('/bot/run-now', async (req, res) => {
   res.redirect('/');
   await runBotCycle();
 });
-
+ 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   log(`Server running on port ${PORT}`, 'success');
