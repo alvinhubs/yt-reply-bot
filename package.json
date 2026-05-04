@@ -1,0 +1,15 @@
+{
+  "name": "youtube-ai-reply-bot",
+  "version": "1.0.0",
+  "description": "Auto-replies to YouTube comments using Claude AI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "googleapis": "^140.0.1",
+    "node-fetch": "^2.7.0",
+    "dotenv": "^16.3.1"
+  }
+}
