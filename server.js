@@ -145,7 +145,7 @@ async function generateReply(commentText) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': CLAUDE_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 150, system, messages: [{ role: 'user', content: commentText }] })
+    body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 150, system, messages: [{ role: 'user', content: commentText }] })
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message);
