@@ -191,7 +191,8 @@ async function scanComments(auth, channelId, options = {}) {
 
         if (s.authorIsChannelOwner) continue;
         if (repliedIds.has(id)) continue;
-        if (t.snippet.totalReplyCount > 0) continue; // skip already replied
+        // Include ALL comments regardless of reply count
+        // Viewers reply to each other so totalReplyCount > 0 doesnt mean owner replied
 
         // Date filtering
         if (dateFilter === 'last_year') {
