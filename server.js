@@ -10,12 +10,16 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+const APP_VERSION = 'UPDATED SAFE MODE v3 - NO DUPLICATE THREAD REPLIES';
+
 const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY;
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-5';
+
 const REPLY_TONE = process.env.REPLY_TONE || 'friendly, warm and natural';
 const REPLY_LENGTH = process.env.REPLY_LENGTH || 'short, 1 sentence';
 const CHANNEL_NAME = process.env.CHANNEL_NAME || 'AlvinHub';
-const PORT = process.env.PORT || 8080;
 
+const PORT = process.env.PORT || 8080;
 const DAILY_QUOTA = 10000;
 const REPLY_COST = 50;
 const SCAN_COST = 1;
@@ -24,7 +28,9 @@ const SEARCH_COST = 100;
 const DATA_DIR = path.join(__dirname, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'reply-state.json');
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 let refreshToken = process.env.YOUTUBE_REFRESH_TOKEN || null;
 let botRunning = false;
@@ -32,6 +38,7 @@ let botInterval = null;
 let catchingUp = false;
 let checkIntervalMins = Number(process.env.CHECK_INTERVAL_MINS || 15);
 let autoPauseAt = Number(process.env.AUTO_PAUSE_AT || 90);
+
 let logs = [];
 let scannedComments = [];
 let videoList = [];
@@ -42,7 +49,6 @@ let repliedCommentIds = new Set(state.repliedCommentIds || []);
 let closedThreadIds = new Set(state.closedThreadIds || []);
 let skippedCommentIds = new Set(state.skippedCommentIds || []);
 let replyHistory = state.replyHistory || [];
-let duplicateTexts = state.duplicateTexts || {};
 
 let stats = {
   totalReplied: state.totalReplied || 0,
@@ -60,14 +66,15 @@ const TIME_FILTERS = {
   '10min': { label: 'Last 10 minutes', ms: 10 * 60 * 1000 },
   '30min': { label: 'Last 30 minutes', ms: 30 * 60 * 1000 },
   '1hour': { label: 'Last 1 hour', ms: 60 * 60 * 1000 },
-  '5days': { label: 'Last 5 days', ms: 5 * 86400000 },
-  week: { label: 'Last 1 week', ms: 7 * 86400000 },
-  month: { label: 'Last 1 month', ms: 30 * 86400000 },
-  '2months': { label: 'Last 2 months', ms: 60 * 86400000 },
-  '3months': { label: 'Last 3 months', ms: 90 * 86400000 },
-  '6months': { label: 'Last 6 months', ms: 180 * 86400000 },
-  year: { label: 'Last 1 year', ms: 365 * 86400000 },
-  '2years': { label: 'Last 2 years', ms: 730 * 86400000 },
+  '24hours': { label: 'Last 24 hours', ms: 24 * 60 * 60 * 1000 },
+  '5days': { label: 'Last 5 days', ms: 5 * 24 * 60 * 60 * 1000 },
+  week: { label: 'Last 1 week', ms: 7 * 24 * 60 * 60 * 1000 },
+  month: { label: 'Last 1 month', ms: 30 * 24 * 60 * 60 * 1000 },
+  '2months': { label: 'Last 2 months', ms: 60 * 24 * 60 * 60 * 1000 },
+  '3months': { label: 'Last 3 months', ms: 90 * 24 * 60 * 60 * 1000 },
+  '6months': { label: 'Last 6 months', ms: 180 * 24 * 60 * 60 * 1000 },
+  year: { label: 'Last 1 year', ms: 365 * 24 * 60 * 60 * 1000 },
+  '2years': { label: 'Last 2 years', ms: 730 * 24 * 60 * 60 * 1000 },
 };
 
 function loadState() {
@@ -86,7 +93,6 @@ function saveState() {
     closedThreadIds: Array.from(closedThreadIds).slice(-50000),
     skippedCommentIds: Array.from(skippedCommentIds).slice(-50000),
     replyHistory: replyHistory.slice(0, 1000),
-    duplicateTexts,
     totalReplied: stats.totalReplied,
     totalSkipped: stats.totalSkipped,
     savedAt: new Date().toISOString(),
@@ -115,8 +121,10 @@ function checkDailyReset() {
 function timeUntilReset() {
   const diff = stats.dailyResetAt - new Date();
   if (diff <= 0) return 'Resetting now...';
+
   const h = Math.floor(diff / 3600000);
   const m = Math.floor((diff % 3600000) / 60000);
+
   return `${h}h ${m}m`;
 }
 
@@ -129,8 +137,15 @@ function repliesLeft() {
 }
 
 function log(msg, type = 'info', badge = null) {
-  logs.unshift({ time: new Date().toISOString(), msg, type, badge });
+  logs.unshift({
+    time: new Date().toISOString(),
+    msg,
+    type,
+    badge,
+  });
+
   if (logs.length > 400) logs.pop();
+
   console.log(`[${type.toUpperCase()}] ${msg}`);
 }
 
@@ -142,7 +157,8 @@ function esc(s) {
   return String(s || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function stripHtml(s) {
@@ -161,10 +177,6 @@ function normaliseText(text) {
     .trim();
 }
 
-function getRedirectUri() {
-  return process.env.REDIRECT_URI || `http://localhost:${PORT}/auth/callback`;
-}
-
 function getAge(date) {
   const diff = Date.now() - new Date(date).getTime();
   const mins = Math.floor(diff / 60000);
@@ -176,6 +188,7 @@ function getAge(date) {
   if (days < 7) return `${days}d ago`;
   if (days < 30) return `${Math.floor(days / 7)}w ago`;
   if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+
   return `${Math.floor(days / 365)}y ago`;
 }
 
@@ -191,39 +204,53 @@ function fmtInterval(m) {
   }[m] || `${m} min`;
 }
 
+function getRedirectUri() {
+  return process.env.REDIRECT_URI || `http://localhost:${PORT}/auth/callback`;
+}
+
 function withinTimeFilter(date, filter) {
   if (!filter || filter === 'all') return true;
+
   const f = TIME_FILTERS[filter];
+
   if (!f || !f.ms) return true;
+
   return new Date(date).getTime() >= Date.now() - f.ms;
 }
 
-function isDuplicateReplyComplaint(text) {
+function isComplaintAboutRepeatedReplies(text) {
   const clean = normaliseText(text);
-  return /(same comment|same reply|copy pasted|copy paste|copy and paste|keeps replying|replying again|already replied|multiple replies|repeated reply|repeating|bot|spam|stop replying|you replied already|why are you replying)/i.test(clean);
+
+  return /same comment|same reply|copy pasted|copy paste|copy and paste|keeps replying|replying again|already replied|multiple replies|repeated reply|repeating|bot|spam|stop replying|you replied already|why are you replying|you keep commenting|you keep replying/i.test(clean);
 }
 
-function shouldSkipByTextPattern(text) {
+function shouldSkipCommentText(text) {
   const clean = normaliseText(text);
 
-  if (!clean) return { skip: true, reason: 'empty comment' };
-
-  if (isDuplicateReplyComplaint(clean)) {
-    return { skip: true, reason: 'viewer complained about repeated replies' };
+  if (!clean) {
+    return {
+      skip: true,
+      reason: 'empty comment',
+    };
   }
 
-  duplicateTexts[clean] = duplicateTexts[clean] || 0;
-  duplicateTexts[clean]++;
-
-  if (duplicateTexts[clean] >= 3) {
-    return { skip: true, reason: 'same comment text repeated multiple times' };
+  if (isComplaintAboutRepeatedReplies(clean)) {
+    return {
+      skip: true,
+      reason: 'complaint about repeated replies',
+    };
   }
 
-  return { skip: false, reason: '' };
+  return {
+    skip: false,
+    reason: '',
+  };
 }
 
 async function getAuthClient() {
-  if (!refreshToken) throw new Error('Not authenticated — reconnect at /auth');
+  if (!refreshToken) {
+    throw new Error('Not authenticated — reconnect at /auth');
+  }
 
   const oauth2 = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -231,11 +258,18 @@ async function getAuthClient() {
     getRedirectUri()
   );
 
-  oauth2.setCredentials({ refresh_token: refreshToken });
+  oauth2.setCredentials({
+    refresh_token: refreshToken,
+  });
 
   try {
     const { credentials } = await oauth2.refreshAccessToken();
-    oauth2.setCredentials({ ...credentials, refresh_token: refreshToken });
+
+    oauth2.setCredentials({
+      ...credentials,
+      refresh_token: refreshToken,
+    });
+
     return oauth2;
   } catch (e) {
     if (
@@ -252,7 +286,11 @@ async function getAuthClient() {
 }
 
 async function getChannelId(auth) {
-  const yt = google.youtube({ version: 'v3', auth });
+  const yt = google.youtube({
+    version: 'v3',
+    auth,
+  });
+
   stats.quotaUsed += SCAN_COST;
 
   const res = await yt.channels.list({
@@ -260,14 +298,21 @@ async function getChannelId(auth) {
     mine: true,
   });
 
-  const item = res.data.items?.[0];
-  if (!item) throw new Error('Could not find YouTube channel.');
+  const channel = res.data.items?.[0];
 
-  return item.id;
+  if (!channel) {
+    throw new Error('Could not find YouTube channel.');
+  }
+
+  return channel.id;
 }
 
 async function hasChannelAlreadyRepliedInThread(auth, parentCommentId, channelId) {
-  const yt = google.youtube({ version: 'v3', auth });
+  const yt = google.youtube({
+    version: 'v3',
+    auth,
+  });
+
   let pageToken = null;
 
   do {
@@ -277,21 +322,27 @@ async function hasChannelAlreadyRepliedInThread(auth, parentCommentId, channelId
       maxResults: 100,
     };
 
-    if (pageToken) params.pageToken = pageToken;
+    if (pageToken) {
+      params.pageToken = pageToken;
+    }
 
     stats.quotaUsed += SCAN_COST;
+
     const res = await yt.comments.list(params);
     const replies = res.data.items || [];
 
     const found = replies.some(reply => {
       const s = reply.snippet || {};
+
       return (
         s.authorChannelId?.value === channelId ||
         String(s.authorDisplayName || '').toLowerCase() === CHANNEL_NAME.toLowerCase()
       );
     });
 
-    if (found) return true;
+    if (found) {
+      return true;
+    }
 
     pageToken = res.data.nextPageToken;
   } while (pageToken && !isQuotaExhausted());
@@ -300,7 +351,11 @@ async function hasChannelAlreadyRepliedInThread(auth, parentCommentId, channelId
 }
 
 async function fetchChannelVideos(auth, channelId) {
-  const yt = google.youtube({ version: 'v3', auth });
+  const yt = google.youtube({
+    version: 'v3',
+    auth,
+  });
+
   let videos = [];
   let pageToken = null;
 
@@ -313,9 +368,12 @@ async function fetchChannelVideos(auth, channelId) {
       type: 'video',
     };
 
-    if (pageToken) params.pageToken = pageToken;
+    if (pageToken) {
+      params.pageToken = pageToken;
+    }
 
     stats.quotaUsed += SEARCH_COST;
+
     const res = await yt.search.list(params);
 
     for (const v of res.data.items || []) {
@@ -324,13 +382,17 @@ async function fetchChannelVideos(auth, channelId) {
       videos.push({
         id: v.id.videoId,
         title: v.snippet.title,
-        thumbnail: v.snippet.thumbnails?.medium?.url || v.snippet.thumbnails?.default?.url || '',
+        thumbnail:
+          v.snippet.thumbnails?.medium?.url ||
+          v.snippet.thumbnails?.default?.url ||
+          '',
         publishedAt: v.snippet.publishedAt,
         url: `https://youtube.com/watch?v=${v.id.videoId}`,
       });
     }
 
     pageToken = res.data.nextPageToken;
+
     if (!pageToken) break;
 
     await sleep(200);
@@ -340,8 +402,16 @@ async function fetchChannelVideos(auth, channelId) {
 }
 
 async function scanComments(auth, channelId, options = {}) {
-  const { videoId, dateFilter = 'all', maxPages = 10 } = options;
-  const yt = google.youtube({ version: 'v3', auth });
+  const {
+    videoId = null,
+    dateFilter = 'all',
+    maxPages = 10,
+  } = options;
+
+  const yt = google.youtube({
+    version: 'v3',
+    auth,
+  });
 
   let all = [];
   let pageToken = null;
@@ -355,107 +425,133 @@ async function scanComments(auth, channelId, options = {}) {
       order: 'time',
     };
 
-    if (videoId) params.videoId = videoId;
-    else params.allThreadsRelatedToChannelId = channelId;
+    if (videoId) {
+      params.videoId = videoId;
+    } else {
+      params.allThreadsRelatedToChannelId = channelId;
+    }
 
-    if (pageToken) params.pageToken = pageToken;
+    if (pageToken) {
+      params.pageToken = pageToken;
+    }
 
     stats.quotaUsed += SCAN_COST;
 
-    try {
-      const res = await yt.commentThreads.list(params);
-      const items = res.data.items || [];
+    const res = await yt.commentThreads.list(params);
+    const items = res.data.items || [];
 
-      for (const thread of items) {
-        const top = thread.snippet.topLevelComment;
-        const s = top.snippet;
+    for (const thread of items) {
+      const topComment = thread.snippet.topLevelComment;
+      const s = topComment.snippet;
 
-        const commentId = top.id;
-        const threadId = thread.id;
-        const publishedAt = new Date(s.publishedAt);
-        const updatedAt = new Date(s.updatedAt || s.publishedAt);
+      const commentId = topComment.id;
+      const threadId = thread.id;
+      const publishedAt = new Date(s.publishedAt);
+      const updatedAt = new Date(s.updatedAt || s.publishedAt);
 
-        if (s.authorIsChannelOwner) continue;
-        if (!withinTimeFilter(publishedAt, dateFilter)) continue;
+      if (s.authorIsChannelOwner) continue;
+      if (!withinTimeFilter(publishedAt, dateFilter)) continue;
 
-        if (repliedCommentIds.has(commentId)) continue;
-        if (closedThreadIds.has(threadId) || closedThreadIds.has(commentId)) continue;
-        if (skippedCommentIds.has(commentId)) continue;
+      if (repliedCommentIds.has(commentId)) continue;
+      if (closedThreadIds.has(threadId)) continue;
+      if (closedThreadIds.has(commentId)) continue;
+      if (skippedCommentIds.has(commentId)) continue;
 
-        const inlineReplies = thread.replies?.comments || [];
-        const channelReplyInline = inlineReplies.some(reply => {
-          const rs = reply.snippet || {};
-          return (
-            rs.authorChannelId?.value === channelId ||
-            String(rs.authorDisplayName || '').toLowerCase() === CHANNEL_NAME.toLowerCase()
-          );
-        });
+      const inlineReplies = thread.replies?.comments || [];
 
-        if (channelReplyInline) {
-          repliedCommentIds.add(commentId);
-          closedThreadIds.add(threadId);
-          closedThreadIds.add(commentId);
-          continue;
-        }
+      const inlineChannelReply = inlineReplies.some(reply => {
+        const rs = reply.snippet || {};
 
-        const alreadyReplied = await hasChannelAlreadyRepliedInThread(auth, commentId, channelId);
+        return (
+          rs.authorChannelId?.value === channelId ||
+          String(rs.authorDisplayName || '').toLowerCase() === CHANNEL_NAME.toLowerCase()
+        );
+      });
 
-        if (alreadyReplied) {
-          repliedCommentIds.add(commentId);
-          closedThreadIds.add(threadId);
-          closedThreadIds.add(commentId);
-          continue;
-        }
-
-        const textCheck = shouldSkipByTextPattern(s.textDisplay);
-
-        if (textCheck.skip) {
-          skippedCommentIds.add(commentId);
-          stats.totalSkipped++;
-          log(`Skipped ${s.authorDisplayName}: ${textCheck.reason}`, 'warn');
-          continue;
-        }
-
-        all.push({
-          id: commentId,
-          threadId,
-          videoId: thread.snippet.videoId,
-          author: s.authorDisplayName,
-          authorImg: s.authorProfileImageUrl || '',
-          text: s.textDisplay,
-          cleanText: stripHtml(s.textDisplay),
-          likeCount: s.likeCount || 0,
-          publishedAt,
-          updatedAt,
-          replied: false,
-          skipped: false,
-          status: 'unreplied',
-        });
+      if (inlineChannelReply) {
+        repliedCommentIds.add(commentId);
+        closedThreadIds.add(threadId);
+        closedThreadIds.add(commentId);
+        saveState();
+        continue;
       }
 
-      pages++;
-      pageToken = res.data.nextPageToken;
+      const alreadyRepliedOnYouTube = await hasChannelAlreadyRepliedInThread(
+        auth,
+        commentId,
+        channelId
+      );
 
-      if (!pageToken) break;
+      if (alreadyRepliedOnYouTube) {
+        repliedCommentIds.add(commentId);
+        closedThreadIds.add(threadId);
+        closedThreadIds.add(commentId);
+        saveState();
+        continue;
+      }
 
-      await sleep(150);
-    } catch (e) {
-      if (String(e.message).toLowerCase().includes('quota')) throw e;
-      log(`Comment scan stopped: ${e.message}`, 'warn');
-      break;
+      const textCheck = shouldSkipCommentText(s.textDisplay);
+
+      if (textCheck.skip) {
+        skippedCommentIds.add(commentId);
+        stats.totalSkipped++;
+        saveState();
+
+        log(`Skipped ${s.authorDisplayName}: ${textCheck.reason}`, 'warn');
+        continue;
+      }
+
+      all.push({
+        id: commentId,
+        threadId,
+        videoId: thread.snippet.videoId,
+        author: s.authorDisplayName,
+        authorImg: s.authorProfileImageUrl || '',
+        text: s.textDisplay,
+        cleanText: stripHtml(s.textDisplay),
+        likeCount: s.likeCount || 0,
+        publishedAt,
+        updatedAt,
+        replied: false,
+        skipped: false,
+      });
     }
+
+    pages++;
+    pageToken = res.data.nextPageToken;
+
+    if (!pageToken) break;
+
+    await sleep(150);
   }
 
   all.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+
   saveState();
 
   return all;
 }
 
 async function generateReply(commentText) {
-  if (!CLAUDE_KEY) throw new Error('ANTHROPIC_API_KEY is not set.');
+  if (!CLAUDE_KEY) {
+    throw new Error('ANTHROPIC_API_KEY is not set.');
+  }
 
-  const system = `You are a YouTube creator named "${CHANNEL_NAME}". Reply to this YouTube comment in a ${REPLY_TONE} tone. Keep it ${REPLY_LENGTH}. Do not sound robotic. Do not repeat the viewer's full comment. Do not apologise unless the viewer directly complains. Return ONLY the reply text.`;
+  const system = `
+You are a YouTube creator named "${CHANNEL_NAME}".
+
+Reply to the viewer's comment in a ${REPLY_TONE} tone.
+Keep the reply ${REPLY_LENGTH}.
+
+Rules:
+- Return ONLY the reply text.
+- Do not sound robotic.
+- Do not repeat the viewer's full comment.
+- Do not use the same generic reply every time.
+- Do not apologise unless the viewer directly complains.
+- Do not mention that you are an AI or a bot.
+- Keep it natural, relevant, and human.
+`;
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -465,7 +561,7 @@ async function generateReply(commentText) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-5',
+      model: CLAUDE_MODEL,
       max_tokens: 150,
       system,
       messages: [
@@ -479,13 +575,24 @@ async function generateReply(commentText) {
 
   const data = await res.json();
 
-  if (data.error) throw new Error(data.error.message);
+  if (data.error) {
+    throw new Error(data.error.message);
+  }
 
-  return data.content?.[0]?.text?.trim() || '';
+  const reply = data.content?.[0]?.text?.trim();
+
+  if (!reply) {
+    throw new Error('Claude returned an empty reply.');
+  }
+
+  return reply;
 }
 
 async function postReply(auth, parentId, text) {
-  const yt = google.youtube({ version: 'v3', auth });
+  const yt = google.youtube({
+    version: 'v3',
+    auth,
+  });
 
   stats.quotaUsed += REPLY_COST;
 
@@ -504,33 +611,47 @@ async function replyToComment(auth, channelId, comment) {
   if (
     repliedCommentIds.has(comment.id) ||
     closedThreadIds.has(comment.threadId) ||
-    closedThreadIds.has(comment.id)
+    closedThreadIds.has(comment.id) ||
+    skippedCommentIds.has(comment.id)
   ) {
-    return { replied: false, reason: 'already handled locally' };
+    return {
+      replied: false,
+      reason: 'already handled locally',
+    };
   }
 
-  const alreadyReplied = await hasChannelAlreadyRepliedInThread(auth, comment.id, channelId);
+  const alreadyRepliedOnYouTube = await hasChannelAlreadyRepliedInThread(
+    auth,
+    comment.id,
+    channelId
+  );
 
-  if (alreadyReplied) {
+  if (alreadyRepliedOnYouTube) {
     repliedCommentIds.add(comment.id);
     closedThreadIds.add(comment.threadId);
     closedThreadIds.add(comment.id);
     saveState();
-    return { replied: false, reason: 'already replied on YouTube' };
+
+    return {
+      replied: false,
+      reason: 'already replied on YouTube',
+    };
   }
 
-  const textCheck = shouldSkipByTextPattern(comment.text);
+  const textCheck = shouldSkipCommentText(comment.text);
 
   if (textCheck.skip) {
     skippedCommentIds.add(comment.id);
     stats.totalSkipped++;
     saveState();
-    return { replied: false, reason: textCheck.reason };
+
+    return {
+      replied: false,
+      reason: textCheck.reason,
+    };
   }
 
   const reply = await generateReply(comment.text);
-
-  if (!reply) return { replied: false, reason: 'empty generated reply' };
 
   await postReply(auth, comment.id, reply);
 
@@ -539,7 +660,6 @@ async function replyToComment(auth, channelId, comment) {
   closedThreadIds.add(comment.id);
 
   comment.replied = true;
-  comment.status = 'replied';
 
   stats.totalReplied++;
 
@@ -554,30 +674,36 @@ async function replyToComment(auth, channelId, comment) {
     publishedAt: comment.publishedAt,
   });
 
-  if (replyHistory.length > 1000) replyHistory.pop();
+  if (replyHistory.length > 1000) {
+    replyHistory.pop();
+  }
 
   saveState();
 
-  return { replied: true, reply };
+  return {
+    replied: true,
+    reply,
+  };
 }
 
 async function runBotCycle(dateFilter = 'all') {
   if (!refreshToken) {
-    log('Not connected — visit /auth', 'warn');
+    log('Not connected — visit /auth.', 'warn');
     return;
   }
 
   checkDailyReset();
 
   if (isQuotaExhausted()) {
-    log(`Quota at ${autoPauseAt}% — resets in ${timeUntilReset()}`, 'warn');
+    log(`Quota at ${autoPauseAt}% — resets in ${timeUntilReset()}.`, 'warn');
     return;
   }
 
   stats.lastRun = new Date().toISOString();
 
-  const label = TIME_FILTERS[dateFilter]?.label || 'All time';
-  log(`Checking latest unreplied comments: ${label}`);
+  const filterLabel = TIME_FILTERS[dateFilter]?.label || 'All time';
+
+  log(`Checking latest safe unreplied comments: ${filterLabel}.`);
 
   try {
     const auth = await getAuthClient();
@@ -605,14 +731,15 @@ async function runBotCycle(dateFilter = 'all') {
 
         if (result.replied) {
           replied++;
-          log(`Replied to ${comment.author} (${getAge(comment.publishedAt)})`, 'success', `+${REPLY_COST}`);
+          log(`Replied to ${comment.author} (${getAge(comment.publishedAt)}).`, 'success', `+${REPLY_COST}`);
         } else {
-          log(`Skipped ${comment.author}: ${result.reason}`, 'warn');
+          log(`Skipped ${comment.author}: ${result.reason}.`, 'warn');
         }
 
         await sleep(1500);
       } catch (e) {
         if (e.message === 'SESSION_EXPIRED') return;
+
         if (String(e.message).toLowerCase().includes('quota')) {
           log('Quota hit.', 'warn');
           break;
@@ -623,11 +750,14 @@ async function runBotCycle(dateFilter = 'all') {
     }
 
     log(
-      replied > 0 ? `Cycle complete — replied to ${replied} comments.` : 'Cycle complete — no new comments.',
+      replied > 0
+        ? `Cycle complete — replied to ${replied} comments.`
+        : 'Cycle complete — no new comments.',
       'success'
     );
   } catch (e) {
     if (e.message === 'SESSION_EXPIRED') return;
+
     log(`Cycle error: ${e.message}`, 'error');
   }
 }
@@ -638,7 +768,7 @@ async function runCatchUp(options = {}) {
   checkDailyReset();
 
   if (isQuotaExhausted()) {
-    log(`Quota exhausted — resets in ${timeUntilReset()}`, 'warn');
+    log(`Quota exhausted — resets in ${timeUntilReset()}.`, 'warn');
     return;
   }
 
@@ -650,7 +780,7 @@ async function runCatchUp(options = {}) {
 
   const dateFilter = options.dateFilter || 'all';
   const filterLabel = TIME_FILTERS[dateFilter]?.label || 'All time';
-  const videoLabel = options.videoId ? `video ${options.videoId}` : 'all videos';
+  const videoLabel = options.videoId ? `specific video ${options.videoId}` : 'all videos';
 
   log(`Catch-up started — ${videoLabel}, ${filterLabel}.`, 'success');
 
@@ -679,12 +809,13 @@ async function runCatchUp(options = {}) {
 
       try {
         const result = await replyToComment(auth, channelId, comment);
+
         stats.catchupDone++;
 
         if (result.replied) {
           log(`[${stats.catchupDone}/${stats.catchupTotal}] Replied to ${comment.author}.`, 'success', `+${REPLY_COST}`);
         } else {
-          log(`[${stats.catchupDone}/${stats.catchupTotal}] Skipped ${comment.author}: ${result.reason}`, 'warn');
+          log(`[${stats.catchupDone}/${stats.catchupTotal}] Skipped ${comment.author}: ${result.reason}.`, 'warn');
         }
 
         await sleep(1500);
@@ -718,6 +849,7 @@ function startBot() {
   if (botRunning) return;
 
   botRunning = true;
+
   log(`Bot started — checking every ${fmtInterval(checkIntervalMins)}.`, 'success');
 
   runBotCycle('all');
@@ -732,6 +864,7 @@ function stopBot() {
 
   clearInterval(botInterval);
   botRunning = false;
+
   log('Bot stopped.', 'warn');
 }
 
@@ -740,6 +873,7 @@ function setIntervalMins(mins) {
 
   if (botRunning) {
     clearInterval(botInterval);
+
     botInterval = setInterval(() => {
       runBotCycle('all');
     }, mins * 60 * 1000);
@@ -778,9 +912,6 @@ function renderComments(filter = 'all') {
   return comments
     .slice(0, 80)
     .map(comment => {
-      const status = comment.replied ? 'Replied' : comment.skipped ? 'Skipped' : 'Unreplied';
-      const statusClass = comment.replied ? 'good' : comment.skipped ? 'bad' : 'warn';
-
       return `
         <div class="comment">
           <div class="comment-top">
@@ -789,19 +920,71 @@ function renderComments(filter = 'all') {
               <div class="author">${esc(comment.author)}</div>
               <div class="time">${getAge(comment.publishedAt)} · ${new Date(comment.publishedAt).toLocaleString('en-GB')}</div>
             </div>
-            <span class="status ${statusClass}">${status}</span>
+            <span class="status warn">Unreplied</span>
           </div>
 
           <div class="comment-text">${esc(stripHtml(comment.text))}</div>
 
           <div class="actions">
-            ${
-              !comment.replied && !comment.skipped
-                ? `<a class="btn small blue" href="/reply-one/${encodeURIComponent(comment.id)}?page=comments&filter=${esc(filter)}">Reply</a>`
-                : ''
-            }
+            <a class="btn small blue" href="/reply-one/${encodeURIComponent(comment.id)}?page=comments&filter=${esc(filter)}">Reply</a>
             <a class="btn small" target="_blank" href="https://youtube.com/watch?v=${esc(comment.videoId)}&lc=${esc(comment.id)}">Open</a>
           </div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function renderVideos() {
+  if (!videoList.length) {
+    return `<div class="empty">Click Load My Videos.</div>`;
+  }
+
+  return `
+    <div class="video-grid">
+      ${videoList
+        .map(v => {
+          return `
+            <div class="video">
+              <img src="${esc(v.thumbnail)}" onerror="this.style.display='none'">
+              <div class="video-body">
+                <div class="video-title">${esc(v.title)}</div>
+                <div class="video-date">${new Date(v.publishedAt).toLocaleDateString('en-GB')}</div>
+                <div class="btnrow">
+                  <a class="btn small blue" href="/bot/catchup?videoId=${esc(v.id)}&filter=all&page=videos">Reply all unreplied</a>
+                  <a class="btn small" href="/scan?videoId=${esc(v.id)}&page=comments&filter=all">Scan</a>
+                </div>
+              </div>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+
+function renderHistory() {
+  if (!replyHistory.length) {
+    return `<div class="empty">No reply history yet.</div>`;
+  }
+
+  return replyHistory
+    .slice(0, 150)
+    .map(h => {
+      return `
+        <div class="comment">
+          <div class="comment-top">
+            <div>
+              <div class="author">${esc(h.author)}</div>
+              <div class="time">${new Date(h.time).toLocaleString('en-GB')}</div>
+            </div>
+            <span class="status good">Replied</span>
+          </div>
+
+          <div class="comment-text"><strong>Comment:</strong> ${esc(h.comment)}</div>
+          <div class="comment-text"><strong>Reply:</strong> ${esc(h.reply)}</div>
+
+          <a class="btn small" target="_blank" href="https://youtube.com/watch?v=${esc(h.videoId)}&lc=${esc(h.commentId)}">Open on YouTube</a>
         </div>
       `;
     })
@@ -815,8 +998,7 @@ app.get('/', (req, res) => {
   const filter = req.query.filter || 'all';
   const connected = !!refreshToken;
   const quotaPct = Math.min(100, Math.round((stats.quotaUsed / DAILY_QUOTA) * 100));
-
-  const unrepliedCount = scannedComments.filter(c => !c.replied && !c.skipped).length;
+  const unrepliedCount = scannedComments.length;
 
   res.send(`
 <!DOCTYPE html>
@@ -825,61 +1007,341 @@ app.get('/', (req, res) => {
   <meta charset="UTF-8">
   <meta http-equiv="refresh" content="20">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(CHANNEL_NAME)} Reply Bot</title>
+  <title>${esc(CHANNEL_NAME)} Reply Bot - ${APP_VERSION}</title>
+
   <style>
     * { box-sizing: border-box; }
-    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#090909; color:#e5e7eb; }
-    a { color:inherit; text-decoration:none; }
-    .wrap { display:grid; grid-template-columns:220px 1fr; min-height:100vh; }
-    .side { background:#111; border-right:1px solid #222; padding:16px; }
-    .logo { font-weight:800; font-size:18px; margin-bottom:20px; }
-    .nav a { display:block; padding:10px; border-radius:8px; color:#9ca3af; margin-bottom:4px; }
-    .nav a.active, .nav a:hover { background:#1f2937; color:white; }
-    .main { padding:24px; }
-    .title { font-size:24px; font-weight:800; margin-bottom:4px; }
-    .sub { color:#9ca3af; margin-bottom:20px; }
-    .grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:16px; }
-    .card { background:#111; border:1px solid #222; border-radius:12px; padding:16px; margin-bottom:16px; }
-    .label { color:#6b7280; font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
-    .num { font-size:26px; font-weight:800; margin-top:4px; }
-    .btnrow { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
-    .btn { display:inline-block; padding:9px 14px; background:#1f2937; border:1px solid #333; border-radius:8px; font-size:13px; }
-    .btn:hover { background:#374151; }
-    .blue { background:#1d4ed8; border-color:#1d4ed8; color:white; }
-    .green { background:#16a34a; border-color:#16a34a; color:white; }
-    .red { background:#dc2626; border-color:#dc2626; color:white; }
-    .small { padding:6px 10px; font-size:12px; }
-    .tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; }
-    .tab { padding:7px 11px; border:1px solid #333; border-radius:999px; color:#9ca3af; font-size:12px; }
-    .tab.active { background:#1d4ed8; border-color:#1d4ed8; color:white; }
-    .comment { background:#111; border:1px solid #222; border-radius:12px; padding:14px; margin-bottom:10px; }
-    .comment-top { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
-    .avatar { width:34px; height:34px; border-radius:50%; background:#1f2937; }
-    .author { font-weight:700; }
-    .time { color:#6b7280; font-size:12px; }
-    .status { margin-left:auto; font-size:11px; padding:3px 8px; border-radius:999px; }
-    .good { color:#22c55e; background:rgba(34,197,94,.1); }
-    .warn { color:#f59e0b; background:rgba(245,158,11,.1); }
-    .bad { color:#ef4444; background:rgba(239,68,68,.1); }
-    .comment-text { color:#d1d5db; line-height:1.5; margin-bottom:10px; }
-    .actions { display:flex; gap:6px; }
-    .log { list-style:none; padding:0; margin:0; max-height:300px; overflow:auto; }
-    .log li { border-bottom:1px solid #1f2937; padding:7px 0; color:#9ca3af; font-size:13px; }
-    .empty { color:#6b7280; text-align:center; padding:30px; }
-    .bar { background:#222; height:8px; border-radius:999px; overflow:hidden; }
-    .fill { height:100%; background:#22c55e; width:${quotaPct}%; }
-    .video-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px; }
-    .video { background:#111; border:1px solid #222; border-radius:12px; overflow:hidden; }
-    .video img { width:100%; aspect-ratio:16/9; object-fit:cover; background:#1f2937; }
-    .video-body { padding:10px; }
-    .video-title { font-size:13px; font-weight:700; margin-bottom:8px; }
-    @media(max-width:800px){ .wrap{grid-template-columns:1fr}.side{display:none}.grid{grid-template-columns:1fr 1fr}.main{padding:16px} }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #090909;
+      color: #e5e7eb;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .wrap {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      min-height: 100vh;
+    }
+
+    .side {
+      background: #111;
+      border-right: 1px solid #222;
+      padding: 16px;
+    }
+
+    .logo {
+      font-weight: 800;
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    .version {
+      font-size: 11px;
+      color: #22c55e;
+      margin-bottom: 20px;
+      line-height: 1.4;
+      font-weight: 700;
+    }
+
+    .nav a {
+      display: block;
+      padding: 10px;
+      border-radius: 8px;
+      color: #9ca3af;
+      margin-bottom: 4px;
+    }
+
+    .nav a.active,
+    .nav a:hover {
+      background: #1f2937;
+      color: white;
+    }
+
+    .main {
+      padding: 24px;
+    }
+
+    .title {
+      font-size: 24px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+
+    .sub {
+      color: #9ca3af;
+      margin-bottom: 20px;
+    }
+
+    .version-banner {
+      background: rgba(34, 197, 94, .12);
+      border: 1px solid rgba(34, 197, 94, .35);
+      color: #22c55e;
+      padding: 12px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+      font-weight: 700;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .card {
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .label {
+      color: #6b7280;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    .num {
+      font-size: 26px;
+      font-weight: 800;
+      margin-top: 4px;
+    }
+
+    .btnrow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .btn {
+      display: inline-block;
+      padding: 9px 14px;
+      background: #1f2937;
+      border: 1px solid #333;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+
+    .btn:hover {
+      background: #374151;
+    }
+
+    .blue {
+      background: #1d4ed8;
+      border-color: #1d4ed8;
+      color: white;
+    }
+
+    .green {
+      background: #16a34a;
+      border-color: #16a34a;
+      color: white;
+    }
+
+    .red {
+      background: #dc2626;
+      border-color: #dc2626;
+      color: white;
+    }
+
+    .small {
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    .tab {
+      padding: 7px 11px;
+      border: 1px solid #333;
+      border-radius: 999px;
+      color: #9ca3af;
+      font-size: 12px;
+    }
+
+    .tab.active {
+      background: #1d4ed8;
+      border-color: #1d4ed8;
+      color: white;
+    }
+
+    .comment {
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+
+    .comment-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: #1f2937;
+    }
+
+    .author {
+      font-weight: 700;
+    }
+
+    .time {
+      color: #6b7280;
+      font-size: 12px;
+    }
+
+    .status {
+      margin-left: auto;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+    }
+
+    .good {
+      color: #22c55e;
+      background: rgba(34,197,94,.1);
+    }
+
+    .warn {
+      color: #f59e0b;
+      background: rgba(245,158,11,.1);
+    }
+
+    .bad {
+      color: #ef4444;
+      background: rgba(239,68,68,.1);
+    }
+
+    .comment-text {
+      color: #d1d5db;
+      line-height: 1.5;
+      margin-bottom: 10px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .log {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      max-height: 300px;
+      overflow: auto;
+    }
+
+    .log li {
+      border-bottom: 1px solid #1f2937;
+      padding: 7px 0;
+      color: #9ca3af;
+      font-size: 13px;
+    }
+
+    .empty {
+      color: #6b7280;
+      text-align: center;
+      padding: 30px;
+    }
+
+    .bar {
+      background: #222;
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .fill {
+      height: 100%;
+      background: #22c55e;
+      width: ${quotaPct}%;
+    }
+
+    .video-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 12px;
+    }
+
+    .video {
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .video img {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      background: #1f2937;
+    }
+
+    .video-body {
+      padding: 10px;
+    }
+
+    .video-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .video-date {
+      font-size: 11px;
+      color: #6b7280;
+      margin-bottom: 8px;
+    }
+
+    @media(max-width: 800px) {
+      .wrap {
+        grid-template-columns: 1fr;
+      }
+
+      .side {
+        display: none;
+      }
+
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .main {
+        padding: 16px;
+      }
+    }
   </style>
 </head>
+
 <body>
 <div class="wrap">
+
   <div class="side">
     <div class="logo">${esc(CHANNEL_NAME)} Bot</div>
+    <div class="version">${APP_VERSION}</div>
+
     <div class="nav">
       <a class="${page === 'dashboard' ? 'active' : ''}" href="/?page=dashboard">Dashboard</a>
       <a class="${page === 'comments' ? 'active' : ''}" href="/?page=comments">Comments (${unrepliedCount})</a>
@@ -890,11 +1352,13 @@ app.get('/', (req, res) => {
   </div>
 
   <div class="main">
+    <div class="version-banner">${APP_VERSION}</div>
+
     ${
       page === 'dashboard'
         ? `
           <div class="title">Dashboard</div>
-          <div class="sub">Replies only to comments where your channel has not already replied in the thread.</div>
+          <div class="sub">The bot now closes a whole thread once your channel has replied once.</div>
 
           ${!connected ? `<div class="card bad">Not connected. <a href="/auth"><strong>Connect YouTube</strong></a></div>` : ''}
 
@@ -929,7 +1393,9 @@ app.get('/', (req, res) => {
             <div class="label">Check interval</div>
             <br>
             <div class="btnrow">
-              ${[5,15,30,60,360,1440,10080].map(m => `<a class="btn ${checkIntervalMins === m ? 'blue' : ''}" href="/bot/interval/${m}">${fmtInterval(m)}</a>`).join('')}
+              ${[5, 15, 30, 60, 360, 1440, 10080]
+                .map(m => `<a class="btn ${checkIntervalMins === m ? 'blue' : ''}" href="/bot/interval/${m}">${fmtInterval(m)}</a>`)
+                .join('')}
             </div>
           </div>
 
@@ -947,7 +1413,7 @@ app.get('/', (req, res) => {
       page === 'comments'
         ? `
           <div class="title">Comments</div>
-          <div class="sub">Scan comments and manually reply. Already-replied threads are filtered out.</div>
+          <div class="sub">Only comments with no existing channel reply will appear here.</div>
 
           <div class="btnrow">
             <a class="btn blue" href="/scan?page=comments&filter=${esc(filter)}">Scan Comments</a>
@@ -964,30 +1430,13 @@ app.get('/', (req, res) => {
       page === 'videos'
         ? `
           <div class="title">Reply by Video</div>
-          <div class="sub">Select a specific video and reply only to comments that have not been responded to.</div>
+          <div class="sub">Select a video and reply only to comments that have not already been handled.</div>
 
           <div class="btnrow">
             <a class="btn blue" href="/load-videos">Load My Videos</a>
           </div>
 
-          ${
-            videoList.length === 0
-              ? `<div class="empty">Click Load My Videos.</div>`
-              : `<div class="video-grid">
-                  ${videoList.map(v => `
-                    <div class="video">
-                      <img src="${esc(v.thumbnail)}">
-                      <div class="video-body">
-                        <div class="video-title">${esc(v.title)}</div>
-                        <div class="btnrow">
-                          <a class="btn small blue" href="/bot/catchup?videoId=${esc(v.id)}&filter=all&page=videos">Reply all</a>
-                          <a class="btn small" href="/scan?videoId=${esc(v.id)}&page=comments&filter=all">Scan</a>
-                        </div>
-                      </div>
-                    </div>
-                  `).join('')}
-                </div>`
-          }
+          ${renderVideos()}
         `
         : ''
     }
@@ -996,26 +1445,8 @@ app.get('/', (req, res) => {
       page === 'history'
         ? `
           <div class="title">Reply History</div>
-          <div class="sub">This shows what the bot has replied to.</div>
-
-          ${
-            replyHistory.length === 0
-              ? `<div class="empty">No reply history yet.</div>`
-              : replyHistory.slice(0, 150).map(h => `
-                  <div class="comment">
-                    <div class="comment-top">
-                      <div>
-                        <div class="author">${esc(h.author)}</div>
-                        <div class="time">${new Date(h.time).toLocaleString('en-GB')}</div>
-                      </div>
-                      <span class="status good">Replied</span>
-                    </div>
-                    <div class="comment-text"><strong>Comment:</strong> ${esc(h.comment)}</div>
-                    <div class="comment-text"><strong>Reply:</strong> ${esc(h.reply)}</div>
-                    <a class="btn small" target="_blank" href="https://youtube.com/watch?v=${esc(h.videoId)}&lc=${esc(h.commentId)}">Open on YouTube</a>
-                  </div>
-                `).join('')
-          }
+          <div class="sub">Shows what the bot has already replied to.</div>
+          ${renderHistory()}
         `
         : ''
     }
@@ -1046,11 +1477,11 @@ app.get('/', (req, res) => {
             <div class="label">Safety Logic</div>
             <br>
             ✅ Checks YouTube before replying<br>
-            ✅ Closes a thread once your channel has replied<br>
-            ✅ Does not reply again when the viewer replies back<br>
-            ✅ Skips duplicate complaints<br>
-            ✅ Skips repeated copy-paste comments<br>
-            ✅ Saves history in data/reply-state.json
+            ✅ Closes the whole thread once your channel replies<br>
+            ✅ Does not reply when the viewer replies back<br>
+            ✅ Skips complaints about repeated replies<br>
+            ✅ Saves reply history in data/reply-state.json<br>
+            ✅ Dashboard shows: ${APP_VERSION}
           </div>
         `
         : ''
@@ -1065,7 +1496,9 @@ app.get('/', (req, res) => {
 app.get('/auth', (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
 
-  if (!clientId) return res.send('GOOGLE_CLIENT_ID not set');
+  if (!clientId) {
+    return res.send('GOOGLE_CLIENT_ID not set');
+  }
 
   const oauth2 = new google.auth.OAuth2(
     clientId,
@@ -1085,7 +1518,9 @@ app.get('/auth', (req, res) => {
 app.get('/auth/callback', async (req, res) => {
   const { code } = req.query;
 
-  if (!code) return res.send('No code received.');
+  if (!code) {
+    return res.send('No code received.');
+  }
 
   try {
     const oauth2 = new google.auth.OAuth2(
@@ -1117,9 +1552,9 @@ app.get('/scan', async (req, res) => {
   const videoId = req.query.videoId || null;
   const filter = req.query.filter || 'all';
 
-  res.redirect(`/?page=${page}&filter=${filter}`);
-
-  if (!refreshToken) return;
+  if (!refreshToken) {
+    return res.redirect(`/?page=${page}&filter=${filter}`);
+  }
 
   try {
     const auth = await getAuthClient();
@@ -1137,12 +1572,14 @@ app.get('/scan', async (req, res) => {
       log('Scan error: ' + e.message, 'error');
     }
   }
+
+  res.redirect(`/?page=${page}&filter=${filter}`);
 });
 
 app.get('/load-videos', async (req, res) => {
-  res.redirect('/?page=videos');
-
-  if (!refreshToken) return;
+  if (!refreshToken) {
+    return res.redirect('/?page=videos');
+  }
 
   try {
     const auth = await getAuthClient();
@@ -1156,17 +1593,19 @@ app.get('/load-videos', async (req, res) => {
       log('Load videos error: ' + e.message, 'error');
     }
   }
+
+  res.redirect('/?page=videos');
 });
 
 app.get('/reply-one/:id', async (req, res) => {
   const page = req.query.page || 'comments';
   const filter = req.query.filter || 'all';
 
-  res.redirect(`/?page=${page}&filter=${filter}`);
-
   const comment = scannedComments.find(c => c.id === req.params.id);
 
-  if (!comment || comment.replied || comment.skipped) return;
+  if (!comment || comment.replied || comment.skipped) {
+    return res.redirect(`/?page=${page}&filter=${filter}`);
+  }
 
   try {
     const auth = await getAuthClient();
@@ -1175,7 +1614,9 @@ app.get('/reply-one/:id', async (req, res) => {
     const result = await replyToComment(auth, channelId, comment);
 
     log(
-      result.replied ? `Manually replied to ${comment.author}.` : `Manual reply skipped: ${result.reason}`,
+      result.replied
+        ? `Manually replied to ${comment.author}.`
+        : `Manual reply skipped: ${result.reason}.`,
       result.replied ? 'success' : 'warn'
     );
   } catch (e) {
@@ -1183,6 +1624,8 @@ app.get('/reply-one/:id', async (req, res) => {
       log('Reply error: ' + e.message, 'error');
     }
   }
+
+  res.redirect(`/?page=${page}&filter=${filter}`);
 });
 
 app.get('/bot/start', (req, res) => {
@@ -1196,8 +1639,8 @@ app.get('/bot/stop', (req, res) => {
 });
 
 app.get('/bot/run-now', async (req, res) => {
-  res.redirect('/');
   await runBotCycle('all');
+  res.redirect('/');
 });
 
 app.get('/bot/catchup', async (req, res) => {
@@ -1205,12 +1648,12 @@ app.get('/bot/catchup', async (req, res) => {
   const videoId = req.query.videoId || null;
   const page = req.query.page || 'dashboard';
 
-  res.redirect(`/?page=${page}&filter=${filter}`);
-
-  runCatchUp({
+  await runCatchUp({
     dateFilter: filter,
     videoId,
   });
+
+  res.redirect(`/?page=${page}&filter=${filter}`);
 });
 
 app.get('/bot/interval/:mins', (req, res) => {
@@ -1236,6 +1679,7 @@ app.get('/bot/autopause/:pct', (req, res) => {
 
 app.get('/debug', (req, res) => {
   res.json({
+    appVersion: APP_VERSION,
     connected: !!refreshToken,
     botRunning,
     catchingUp,
@@ -1251,6 +1695,7 @@ app.get('/debug', (req, res) => {
 
 app.listen(PORT, () => {
   log(`Server running on port ${PORT}.`, 'success');
+  log(APP_VERSION, 'success');
 
   if (refreshToken && process.env.AUTO_START === 'true') {
     startBot();
