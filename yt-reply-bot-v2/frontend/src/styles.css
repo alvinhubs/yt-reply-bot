@@ -1,0 +1,39 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0f1115;
+  color: #e6e8eb;
+}
+.app { max-width: 1000px; margin: 0 auto; padding: 24px; }
+h1 { font-size: 20px; margin-bottom: 16px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.card {
+  background: #171a21;
+  border: 1px solid #2a2e37;
+  border-radius: 10px;
+  padding: 16px;
+}
+.card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: #9aa2af; margin: 0 0 12px; }
+.meter { height: 8px; background: #262a33; border-radius: 4px; overflow: hidden; }
+.meter-fill { height: 100%; background: #4f7cff; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #232730; }
+button {
+  background: #4f7cff; color: white; border: none; border-radius: 6px;
+  padding: 6px 10px; cursor: pointer; font-size: 13px;
+}
+button.active { background: #2f5be0; }
+button:disabled { opacity: .5; cursor: default; }
+input[type="text"], input[type="number"] {
+  background: #0f1115; border: 1px solid #2a2e37; color: #e6e8eb;
+  border-radius: 6px; padding: 6px 8px;
+}
+.preset-row, .add-video-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.switch-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.reply-log { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.reply-log li { padding: 8px 0; border-bottom: 1px solid #232730; font-size: 13px; }
+.reply-log .comment { color: #9aa2af; }
+.reply-log .reply { margin-top: 2px; }
+.reply-log .meta { color: #5c6472; font-size: 11px; margin-top: 4px; }
+.hint { color: #5c6472; font-size: 12px; }
