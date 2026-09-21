@@ -20,7 +20,7 @@ const REPLY_LENGTH = process.env.REPLY_LENGTH || 'short, 1 sentence';
 const CHANNEL_NAME = process.env.CHANNEL_NAME || 'AlvinHub';
 
 const PORT = process.env.PORT || 8080;
-const DAILY_QUOTA = 10000;
+const DAILY_QUOTA = 480000;
 const REPLY_COST = 50;
 const SCAN_COST = 1;
 const SEARCH_COST = 100;
